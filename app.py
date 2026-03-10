@@ -203,10 +203,12 @@ def _map_uploaded_validation_manual_dataframe(dataframe: pd.DataFrame) -> pd.Dat
 
 def _sum_export_payout_total(dataframe: pd.DataFrame) -> Decimal:
     total = Decimal("0")
-    if dataframe is None or dataframe.empty or "payout" not in dataframe.columns:
+    if dataframe is None or dataframe.empty:
         return total
-    for value in dataframe["payout"].tolist():
-        parsed = parse_decimal(value)
+    for _, row in dataframe.iterrows():
+        parsed = parse_decimal(row.get("revenue", ""))
+        if parsed is None:
+            parsed = parse_decimal(row.get("payout", ""))
         if parsed is not None:
             total += parsed
     return total

@@ -150,6 +150,10 @@ def _normalize_manual_append_dataframe(manual_append_df: pd.DataFrame | None) ->
             format_money(parsed) if (parsed := parse_decimal(value)) is not None else str(value).strip()
             for value in normalized[column].tolist()
         ]
+    normalized["revenue"] = [
+        revenue if str(revenue).strip() else str(payout).strip()
+        for revenue, payout in zip(normalized["revenue"].tolist(), normalized["payout"].tolist())
+    ]
     normalized["status"] = [str(value).strip().lower() for value in normalized["status"].tolist()]
     normalized["created"] = [str(value).strip() for value in normalized["created"].tolist()]
     normalized["conversion_id"] = [str(value).strip() for value in normalized["conversion_id"].tolist()]
@@ -199,6 +203,18 @@ def _cents_to_decimal(value: int) -> Decimal:
     return _to_money(Decimal(value) * _CENT)
 
 
+def _extract_export_amounts(df: pd.DataFrame) -> list[Decimal]:
+    amounts: list[Decimal] = []
+    if df is None or df.empty:
+        return amounts
+    for _, row in df.iterrows():
+        parsed = parse_decimal(row.get("revenue", ""))
+        if parsed is None:
+            parsed = parse_decimal(row.get("payout", ""))
+        amounts.append(parsed or Decimal("0"))
+    return amounts
+
+
 def build_export_dataframe(
     master_df: pd.DataFrame,
     export_positions: list[int],
@@ -211,7 +227,8 @@ def build_export_dataframe(
         row["publisher_id"] = str(master_df.iloc[pos].get("publisher_id", "")).strip()
         row["txn_id"] = master_df.iloc[pos]["txn_id"]
         payout_raw = parse_decimal(master_df.iloc[pos]["real_revenue"])
-        row["payout"] = format_money(payout_raw) if payout_raw is not None else ""
+        row["revenue"] = format_money(payout_raw) if payout_raw is not None else ""
+        row["payout"] = ""
         row["sale_currency"] = master_df.iloc[pos]["commission_currency"]
         status_value = str(final_status.iloc[pos]).strip().lower()
         row["status"] = "approved" if status_value in {"approved", "ready_to_pay"} else status_value
@@ -344,12 +361,10 @@ def _balance_payouts_safe(
 
 def _sum_payout_column(df: pd.DataFrame) -> Decimal:
     total = Decimal("0")
-    if "payout" not in df.columns:
+    if df is None or df.empty:
         return total
-    for value in df["payout"].tolist():
-        parsed = parse_decimal(value)
-        if parsed is not None:
-            total += parsed
+    for value in _extract_export_amounts(df):
+        total += value
     return total
 
 
@@ -382,7 +397,7 @@ def build_balanced_export_dataframe(
             format_money(total),
         )
 
-    current_payouts = [parse_decimal(value) or Decimal("0") for value in export_df["payout"].tolist()]
+    current_payouts = _extract_export_amounts(export_df)
     current_total = _sum_payout_column(export_df)
     target_total = current_total + difference_delta
 
@@ -403,9 +418,9 @@ def build_balanced_export_dataframe(
     )
 
     balanced = export_df.copy()
-    balanced["payout"] = [format_money(value) for value in new_payouts]
-    if "revenue" in balanced.columns and balanced["revenue"].astype(str).str.strip().ne("").any():
-        balanced["revenue"] = [format_money(value) for value in new_payouts]
+    balanced["revenue"] = [format_money(value) for value in new_payouts]
+    if "payout" in balanced.columns and balanced["payout"].astype(str).str.strip().ne("").any():
+        balanced["payout"] = [format_money(value) for value in new_payouts]
 
     average_delta = (actual_total - current_total) / len(new_payouts) if new_payouts else Decimal("0")
     sanitized = _sanitize_validation_output_dataframe(balanced, "export_public")
@@ -490,7 +505,7 @@ def build_payout_adjusted_dataframe(
             True,
         )
 
-    current_payouts = [parse_decimal(value) or Decimal("0") for value in export_df["payout"].tolist()]
+    current_payouts = _extract_export_amounts(export_df)
     new_payouts, exact_reached, actual_total = _balance_payouts_safe(
         current_payouts,
         target_total,
@@ -498,9 +513,9 @@ def build_payout_adjusted_dataframe(
     )
 
     adjusted = export_df.copy()
-    adjusted["payout"] = [format_money(value) for value in new_payouts]
-    if "revenue" in adjusted.columns and adjusted["revenue"].astype(str).str.strip().ne("").any():
-        adjusted["revenue"] = [format_money(value) for value in new_payouts]
+    adjusted["revenue"] = [format_money(value) for value in new_payouts]
+    if "payout" in adjusted.columns and adjusted["payout"].astype(str).str.strip().ne("").any():
+        adjusted["payout"] = [format_money(value) for value in new_payouts]
 
     average_delta = (actual_total - current_total) / len(new_payouts) if new_payouts else Decimal("0")
     sanitized = _sanitize_validation_output_dataframe(adjusted, "export_public")
