@@ -1144,6 +1144,7 @@ def _render_validation_tab() -> None:
                 data=_read_file_bytes(balanced_result["path"]),
                 file_name=Path(balanced_result["path"]).name,
                 mime="text/csv",
+                key="download_balanced_preview_btn",
             )
 
     balanced_manual_result = st.session_state.get("balanced_manual_result")
@@ -1164,6 +1165,7 @@ def _render_validation_tab() -> None:
                 data=_read_file_bytes(balanced_manual_result["path"]),
                 file_name=Path(balanced_manual_result["path"]).name,
                 mime="text/csv",
+                key="download_balanced_manual_preview_btn",
             )
 
     # ---- Adjusted export result (post-processing action) ----
@@ -1195,6 +1197,7 @@ def _render_validation_tab() -> None:
                 data=_read_file_bytes(adjusted_result["path"]),
                 file_name=Path(adjusted_result["path"]).name,
                 mime="text/csv",
+                key="download_adjusted_preview_btn",
             )
 
     if adjusted_manual_result:
@@ -1213,6 +1216,7 @@ def _render_validation_tab() -> None:
                 data=_read_file_bytes(adjusted_manual_result["path"]),
                 file_name=Path(adjusted_manual_result["path"]).name,
                 mime="text/csv",
+                key="download_adjusted_manual_preview_btn",
             )
 
     # ---- Preview tables ----
@@ -1261,6 +1265,7 @@ def _render_validation_tab() -> None:
             data=_read_file_bytes(paths["export"]),
             file_name=Path(paths["export"]).name,
             mime="text/csv",
+            key="download_base_final_btn",
         )
         if manual_append_variant_result:
             st.download_button(
@@ -1268,6 +1273,7 @@ def _render_validation_tab() -> None:
                 data=_read_file_bytes(manual_append_variant_result["path"]),
                 file_name=Path(manual_append_variant_result["path"]).name,
                 mime="text/csv",
+                key="download_manual_final_btn",
             )
         if adjusted_result:
             st.download_button(
@@ -1275,6 +1281,7 @@ def _render_validation_tab() -> None:
                 data=_read_file_bytes(adjusted_result["path"]),
                 file_name=Path(adjusted_result["path"]).name,
                 mime="text/csv",
+                key="download_adjusted_final_btn",
             )
         if adjusted_manual_result:
             st.download_button(
@@ -1282,6 +1289,7 @@ def _render_validation_tab() -> None:
                 data=_read_file_bytes(adjusted_manual_result["path"]),
                 file_name=Path(adjusted_manual_result["path"]).name,
                 mime="text/csv",
+                key="download_adjusted_manual_final_btn",
             )
     with dl_col2:
         if balanced_result:
@@ -1290,6 +1298,7 @@ def _render_validation_tab() -> None:
                 data=_read_file_bytes(balanced_result["path"]),
                 file_name=Path(balanced_result["path"]).name,
                 mime="text/csv",
+                key="download_balanced_final_btn",
             )
         if balanced_manual_result:
             st.download_button(
@@ -1297,18 +1306,21 @@ def _render_validation_tab() -> None:
                 data=_read_file_bytes(balanced_manual_result["path"]),
                 file_name=Path(balanced_manual_result["path"]).name,
                 mime="text/csv",
+                key="download_balanced_manual_final_btn",
             )
         st.download_button(
             label="Linhas em revisao (CSV)",
             data=_read_file_bytes(paths["needs_review"]),
             file_name=Path(paths["needs_review"]).name,
             mime="text/csv",
+            key="download_needs_review_final_btn",
         )
         st.download_button(
             label="Diff de status (CSV)",
             data=_read_file_bytes(paths["diff"]),
             file_name=Path(paths["diff"]).name,
             mime="text/csv",
+            key="download_diff_final_btn",
         )
     with dl_col3:
         st.download_button(
@@ -1316,18 +1328,21 @@ def _render_validation_tab() -> None:
             data=_read_file_bytes(paths["audit"]),
             file_name=Path(paths["audit"]).name,
             mime="text/csv",
+            key="download_audit_final_btn",
         )
         st.download_button(
             label="Log TXT",
             data=_read_file_bytes(paths["log_txt"]),
             file_name=Path(paths["log_txt"]).name,
             mime="text/plain",
+            key="download_log_txt_final_btn",
         )
         st.download_button(
             label="Log JSON",
             data=_read_file_bytes(paths["log_json"]),
             file_name=Path(paths["log_json"]).name,
             mime="application/json",
+            key="download_log_json_final_btn",
         )
 
     st.caption(
