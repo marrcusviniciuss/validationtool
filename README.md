@@ -212,15 +212,29 @@ Refinamentos aplicados:
 
 ## Validacao: Complemento manual
 
-O modulo de `Validacao` agora possui a secao `Complemento manual`.
+O modulo de `Validacao` agora possui a secao `Complemento manual (pos-validacao)`.
 
 Uso:
 
+- aparece somente depois que a validacao principal ja terminou
+- permite `Editar/colar manualmente` ou `Subir arquivo`
+- o upload aceita CSV/XLSX e mapeia o mesmo schema da grade manual
 - permite colar ou digitar linhas diretamente em uma grade com colunas predefinidas de export
 - essas linhas nao participam do matching
 - essas linhas nao criam matches nem alteram a verdade da reconciliacao
-- essas linhas sao anexadas ao final do `validated_export_<ts>.csv`
-- se houver `validated_export_balanced_<ts>.csv` ou `validated_export_payout_adjusted_<ts>.csv`, elas tambem entram no final desses arquivos sem alteracao
+- essas linhas sao anexadas ao final das variantes de export geradas apos a validacao
+- essas linhas nao sao alteradas por balanceamento nem por ajuste de payout por padrao
+
+## Validacao: Ajuste de payout
+
+O `Ajuste de payout (pos-validacao)` tambem aparece somente depois da execucao principal.
+
+Uso:
+
+- trabalha sobre o snapshot validado atual
+- nao reexecuta o matching
+- preserva o export base original
+- pode gerar variante so com ajuste ou variante com ajuste + complemento manual
 
 ## Modo Comissao
 
@@ -251,9 +265,12 @@ Se o total for pequeno demais para respeitar o piso minimo por linha na quantida
 
 | Arquivo | Descricao |
 |---|---|
-| `validated_export_<ts>.csv` | Export final consolidado sem equilibrio; inclui `Complemento manual` no final quando habilitado |
-| `validated_export_balanced_<ts>.csv` | Segundo arquivo opcional; inclui `Complemento manual` no final sem alterar essas linhas |
-| `validated_export_payout_adjusted_<ts>.csv` | Export com ajuste de payout; inclui `Complemento manual` no final sem alterar essas linhas |
+| `validated_export_<ts>.csv` | Export base validado, preservado como versao original |
+| `validated_export_manual_append_<ts>.csv` | Export base + complemento manual no final |
+| `validated_export_payout_adjusted_<ts>.csv` | Export com ajuste de payout |
+| `validated_export_payout_adjusted_manual_append_<ts>.csv` | Export com ajuste de payout + complemento manual no final |
+| `validated_export_balanced_<ts>.csv` | Export equilibrado opcional |
+| `validated_export_balanced_manual_append_<ts>.csv` | Export equilibrado + complemento manual no final |
 | `match_audit_<ts>.csv` | Auditoria detalhada do matching e da elegibilidade do MASTER, sem `publisher_id` / `affiliate_id` |
 | `needs_review_<ts>.csv` | Casos realmente enviados para revisao, sem `publisher_id` / `affiliate_id` |
 | `diff_<ts>.csv` | Mudancas de status nas linhas ativas do MASTER, sem `publisher_id` / `affiliate_id` |

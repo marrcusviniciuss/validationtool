@@ -110,7 +110,7 @@ O motor v2 foi preservado, mas aplicado apenas aos candidatos ativos (`pending/d
 
 ### Objetivo
 
-A aba de `Validacao` agora possui a secao `Complemento manual`.
+A aba de `Validacao` agora possui a secao `Complemento manual (pos-validacao)`.
 
 Ela existe para anexar linhas diretamente aos arquivos finais de export sem interferir no motor de matching.
 
@@ -146,18 +146,45 @@ As linhas do `Complemento manual`:
 
 Depois que o dataset normal de validacao e produzido, o app anexa as linhas manuais ao final de:
 
-- `validated_export_<ts>.csv`
-- `validated_export_balanced_<ts>.csv`
-- `validated_export_payout_adjusted_<ts>.csv`
+- `validated_export_manual_append_<ts>.csv`
+- `validated_export_balanced_manual_append_<ts>.csv`
+- `validated_export_payout_adjusted_manual_append_<ts>.csv`
 
-Essas linhas entram sempre no final dos arquivos e permanecem inalteradas.
+O export base validado continua preservado em seu arquivo original.
+
+Essas linhas entram sempre no final das variantes derivadas e permanecem inalteradas.
 
 ### UI do complemento
 
-- checkbox para habilitar a secao
+- a secao so aparece depois da validacao principal
+- `Modo de entrada`: `Editar/colar manualmente` ou `Subir arquivo`
 - grade editavel com colunas predefinidas
+- upload de CSV/XLSX com o mesmo schema esperado
 - preview da quantidade de linhas manuais prontas para anexacao
-- botao para limpar a fila manual da execucao atual
+- botao para anexar o complemento aos exports derivados
+- botao para limpar/remover o complemento aplicado
+
+## Ajuste de Payout na Validacao
+
+### Fluxo correto
+
+O `Ajuste de payout` agora acontece apenas em `pos-validacao`.
+
+O operador primeiro:
+
+1. roda a validacao
+2. ve metricas e diferencas
+3. decide se quer aplicar ajuste
+
+### Regra operacional
+
+O ajuste:
+
+- usa o snapshot ja validado
+- nao reexecuta o matching
+- nao altera o export base original
+- gera uma variante explicita de export ajustado
+- pode gerar tambem a variante `ajustado + complemento manual` se houver linhas manuais aplicadas
 
 ## MASTER Operational Outcomes in Audit
 
@@ -191,6 +218,12 @@ Somente quando o operador clica em `Gerar export equilibrado` o app gera:
 - `validated_export_balanced_<ts>.csv`
 
 O arquivo original consolidado e preservado e nunca e sobrescrito.
+
+Se o operador ja tiver aplicado `Complemento manual`, o app pode gerar tambem:
+
+- `validated_export_balanced_manual_append_<ts>.csv`
+
+Nesse caso, as linhas manuais entram no final do arquivo equilibrado sem sofrer alteracao.
 
 A reconciliacao financeira e o balanced export usam somente a populacao correta:
 
@@ -471,9 +504,12 @@ Na area de downloads, a distincao principal e:
 
 | Arquivo | Descricao |
 |---|---|
-| `validated_export_<ts>.csv` | Export final consolidado sem equilibrio: novas aprovacoes + carry-forward aprovado + `Complemento manual` ao final quando habilitado |
-| `validated_export_balanced_<ts>.csv` | Segundo arquivo opcional, gerado apenas apos `Gerar export equilibrado`, com `Complemento manual` anexado ao final sem alteracao |
-| `validated_export_payout_adjusted_<ts>.csv` | Export com ajuste de payout, com `Complemento manual` anexado ao final sem alteracao |
+| `validated_export_<ts>.csv` | Export base validado sem equilibrio: novas aprovacoes + carry-forward aprovado |
+| `validated_export_manual_append_<ts>.csv` | Export base validado + `Complemento manual` anexado ao final |
+| `validated_export_balanced_<ts>.csv` | Segundo arquivo opcional, gerado apenas apos `Gerar export equilibrado` |
+| `validated_export_balanced_manual_append_<ts>.csv` | Export equilibrado + `Complemento manual` anexado ao final sem alteracao |
+| `validated_export_payout_adjusted_<ts>.csv` | Export com ajuste de payout em pos-validacao |
+| `validated_export_payout_adjusted_manual_append_<ts>.csv` | Export com ajuste de payout + `Complemento manual` anexado ao final sem alteracao |
 | `match_audit_<ts>.csv` | Auditoria de match e elegibilidade do MASTER, sem identificadores de affiliate/publisher |
 | `needs_review_<ts>.csv` | Casos que realmente exigem revisao, sem identificadores de affiliate/publisher |
 | `diff_<ts>.csv` | Mudancas de status nas linhas ativas do MASTER, sem identificadores de affiliate/publisher |
@@ -509,6 +545,9 @@ streamlit run app.py
 9. Confirme que `POSTBACK_FINAL` pode ser copiado pelo botao e tambem pela area de texto.
 10. No `Modo Comissao`, gere um caso `Exato` e confirme soma exata.
 11. No `Modo Comissao`, gere um caso `Media` e confirme variacao positiva com soma final fechando o total.
-12. Na `Validacao`, habilite `Complemento manual`, cole 1 ou 2 linhas e confirme que elas aparecem no final do `validated_export`.
-13. Gere tambem o export equilibrado e confirme que as linhas do `Complemento manual` continuam no final sem alteracao.
-14. Gere um ajuste de payout e confirme que as linhas do `Complemento manual` continuam no final sem alteracao.
+12. Na `Validacao`, execute primeiro a validacao principal e confirme que `Ajuste de payout (pos-validacao)` e `Complemento manual (pos-validacao)` so aparecem depois disso.
+13. Em `Complemento manual (pos-validacao)`, teste `Editar/colar manualmente` e confirme que o app gera `validated_export_manual_append_<ts>.csv`.
+14. Em `Complemento manual (pos-validacao)`, teste `Subir arquivo` com o mesmo schema e confirme o mesmo comportamento de anexacao.
+15. Gere tambem o export equilibrado e confirme que as linhas do `Complemento manual` continuam no final sem alteracao.
+16. Gere um ajuste de payout e confirme que o export base permanece preservado e que a variante ajustada sai em arquivo separado.
+17. Com ajuste + complemento manual aplicados, confirme a existencia da variante `validated_export_payout_adjusted_manual_append_<ts>.csv`.

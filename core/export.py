@@ -167,6 +167,26 @@ def _append_manual_rows_to_export(
     return combined.loc[:, PUBLIC_EXPORT_HEADER], manual_public_df
 
 
+def persist_manual_appended_export(
+    export_df: pd.DataFrame,
+    output_dir: Path,
+    manual_append_df: pd.DataFrame | None,
+    filename_prefix: str = "validated_export_manual_append",
+) -> dict[str, Any]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = _timestamp_now()
+    sanitized = _sanitize_validation_output_dataframe(export_df.copy(), "export_public")
+    combined_df, manual_public_df = _append_manual_rows_to_export(sanitized, manual_append_df)
+    path = output_dir / f"{filename_prefix}_{timestamp}.csv"
+    _write_csv(combined_df, path)
+    return {
+        "path": str(path),
+        "df": combined_df,
+        "row_count": int(len(combined_df)),
+        "manual_append_count": int(len(manual_public_df)),
+    }
+
+
 def _to_money(value: Decimal) -> Decimal:
     return value.quantize(_MONEY, rounding=ROUND_HALF_UP)
 
@@ -407,6 +427,7 @@ def persist_balanced_export(
     priority_publisher_id: str | None = None,
     priority_pct: Decimal = Decimal("0"),
     manual_append_df: pd.DataFrame | None = None,
+    filename_prefix: str = "validated_export_balanced",
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = _timestamp_now()
@@ -418,7 +439,7 @@ def persist_balanced_export(
         priority_pct=priority_pct,
         manual_append_df=manual_append_df,
     )
-    balanced_path = output_dir / f"validated_export_balanced_{timestamp}.csv"
+    balanced_path = output_dir / f"{filename_prefix}_{timestamp}.csv"
     _write_csv(balanced_df, balanced_path)
     return {
         "path": str(balanced_path),
@@ -499,6 +520,7 @@ def persist_payout_adjusted_export(
     output_dir: Path,
     floor: Decimal = DEFAULT_BALANCE_FLOOR,
     manual_append_df: pd.DataFrame | None = None,
+    filename_prefix: str = "validated_export_payout_adjusted",
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = _timestamp_now()
@@ -509,7 +531,7 @@ def persist_payout_adjusted_export(
         floor,
         manual_append_df=manual_append_df,
     )
-    path = output_dir / f"validated_export_payout_adjusted_{timestamp}.csv"
+    path = output_dir / f"{filename_prefix}_{timestamp}.csv"
     _write_csv(adjusted_df, path)
     return {
         "path": str(path),

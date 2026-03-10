@@ -26,7 +26,7 @@ from core import (
     read_table,
     run_click_checker,
 )
-from core.normalize import format_money, parse_decimal
+from core.normalize import format_money, normalize_header_name, parse_decimal
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
@@ -182,6 +182,34 @@ def _prepare_manual_postback_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
 
 def _prepare_validation_manual_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
     return _prepare_manual_editor_dataframe(dataframe, _VALIDATION_MANUAL_COLUMNS)
+
+
+def _map_uploaded_validation_manual_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
+    normalized_map: dict[str, str] = {}
+    for column in dataframe.columns.tolist():
+        normalized_key = normalize_header_name(column)
+        if normalized_key and normalized_key not in normalized_map:
+            normalized_map[normalized_key] = column
+
+    mapped_df = pd.DataFrame()
+    for expected_column in _VALIDATION_MANUAL_COLUMNS:
+        source_column = normalized_map.get(normalize_header_name(expected_column))
+        if source_column is None:
+            mapped_df[expected_column] = ""
+        else:
+            mapped_df[expected_column] = dataframe[source_column]
+    return _prepare_validation_manual_dataframe(mapped_df)
+
+
+def _sum_export_payout_total(dataframe: pd.DataFrame) -> Decimal:
+    total = Decimal("0")
+    if dataframe is None or dataframe.empty or "payout" not in dataframe.columns:
+        return total
+    for value in dataframe["payout"].tolist():
+        parsed = parse_decimal(value)
+        if parsed is not None:
+            total += parsed
+    return total
 
 
 def _apply_fill_down_to_dataframe(
@@ -524,25 +552,6 @@ def _render_validation_tab() -> None:
         else:
             st.caption(f"Piso minimo configurado para o export equilibrado: {balance_floor:.2f}")
 
-    # ---- Payout adjustment expander (pre-run) ----
-    with st.expander("Ajuste de payout (opcional)", expanded=False):
-        st.caption(
-            "Gera um arquivo de export separado com valores de payout ajustados ao executar a validacao. "
-            "O export original validado nao e alterado."
-        )
-        adj_mode_label = st.radio(
-            "Modo de ajuste",
-            options=list(_ADJ_MODE_MAP.keys()),
-            key="adj_mode",
-        )
-        adj_mode = _ADJ_MODE_MAP[adj_mode_label]
-        if adj_mode != "none":
-            st.number_input(
-                _ADJ_LABELS[adj_mode],
-                min_value=0.0, value=0.0, step=0.01, format="%.2f",
-                key="adj_value",
-            )
-
     with st.expander("Prioridade segura por publisher (opcional)", expanded=False):
         st.caption(
             "Nao altera a verdade da validacao. So influencia ordenacao de revisao, desempate entre linhas ja "
@@ -568,48 +577,6 @@ def _render_validation_tab() -> None:
                 )
             )
         )
-
-    manual_append_df = pd.DataFrame(columns=_VALIDATION_MANUAL_COLUMNS)
-    enable_manual_append = False
-    with st.expander("Complemento manual", expanded=False):
-        enable_manual_append = st.checkbox(
-            "Anexar linhas manuais aos exports finais",
-            value=False,
-            key="validation_manual_append_enabled",
-        )
-        st.caption(
-            "Essas linhas sao apenas um complemento manual para os downloads finais. "
-            "Elas nao participam do matching, nao contam como evidencia do anunciante e nao sao alteradas "
-            "por balanceamento ou ajuste de payout."
-        )
-        if enable_manual_append:
-            if "validation_manual_seed_df" not in st.session_state:
-                st.session_state["validation_manual_seed_df"] = _build_validation_manual_dataframe()
-            validation_manual_version = int(st.session_state.get("validation_manual_editor_version", 0))
-            validation_manual_editor = st.data_editor(
-                st.session_state["validation_manual_seed_df"],
-                key=f"validation_manual_editor_{validation_manual_version}",
-                num_rows="dynamic",
-                hide_index=True,
-                use_container_width=True,
-                height=360,
-                column_config={
-                    column: st.column_config.TextColumn(column)
-                    for column in _VALIDATION_MANUAL_COLUMNS
-                },
-            )
-            manual_append_df = _prepare_validation_manual_dataframe(validation_manual_editor)
-            if manual_append_df.empty:
-                st.info("Nenhuma linha manual foi preenchida para anexar aos exports.")
-            else:
-                st.success(f"{len(manual_append_df)} linha(s) manual(is) serao anexadas ao final dos exports.")
-                st.dataframe(manual_append_df.head(10), use_container_width=True, height=220, hide_index=True)
-            if st.button("Limpar linhas manuais", key="clear_validation_manual_rows_btn"):
-                st.session_state["validation_manual_seed_df"] = _build_validation_manual_dataframe()
-                st.session_state["validation_manual_editor_version"] = validation_manual_version + 1
-                st.rerun()
-        else:
-            st.info("Ative esta opcao apenas se precisar anexar linhas manuais ao final dos arquivos exportados.")
 
     # ---- Run button ----
     can_run = master_df is not None and advertiser_df is not None
@@ -646,12 +613,6 @@ def _render_validation_tab() -> None:
             _priority_publisher_id = str(st.session_state.get("priority_publisher_id", "")).strip()
             _priority_pct = Decimal(str(st.session_state.get("priority_pct", 0.0)))
 
-            # Capture payout adjustment config from widgets at run time
-            _adj_mode_label = str(st.session_state.get("adj_mode", "Sem ajuste"))
-            _adj_mode = _ADJ_MODE_MAP.get(_adj_mode_label, "none")
-            _adj_value_raw = st.session_state.get("adj_value", 0.0) if _adj_mode != "none" else 0.0
-            _adj_value_decimal = Decimal(str(_adj_value_raw))
-
             try:
                 with st.spinner("Processando..."):
                     result = _run_pipeline(
@@ -662,14 +623,19 @@ def _render_validation_tab() -> None:
                         implicit_approved=st.session_state.get("implicit_approved", False),
                         status_keywords=status_keywords,
                         priority_publisher_id=_priority_publisher_id or None,
-                        manual_append_df=manual_append_df if enable_manual_append else None,
                     )
 
                 st.session_state["run_result"] = result
                 st.session_state.pop("balanced_result", None)
+                st.session_state.pop("balanced_manual_result", None)
                 st.session_state.pop("adjusted_result", None)
+                st.session_state.pop("adjusted_manual_result", None)
+                st.session_state.pop("manual_append_variant_result", None)
                 st.session_state.pop("balanced_error", None)
                 st.session_state.pop("adjusted_error", None)
+                st.session_state.pop("validation_applied_manual_append_df", None)
+                st.session_state.pop("validation_adjustment_config", None)
+                st.session_state["validation_export_view"] = "base"
 
                 # Store run config for consistent post-run display
                 st.session_state["run_config"] = {
@@ -680,25 +646,7 @@ def _render_validation_tab() -> None:
                     "balance_floor": str(_balance_floor),
                     "priority_publisher_id": _priority_publisher_id,
                     "priority_pct": str(_priority_pct),
-                    "adj_mode": _adj_mode,
-                    "adj_mode_label": _adj_mode_label,
-                    "adj_value_decimal": str(_adj_value_decimal),
                 }
-
-                # Auto-generate adjusted export if a mode and value were configured
-                if _adj_mode != "none" and _adj_value_decimal > Decimal("0") and not result["export_internal_df"].empty:
-                    try:
-                        runtime_export_module = _load_runtime_module("core.export")
-                        adj_result = runtime_export_module.persist_payout_adjusted_export(
-                            result["export_internal_df"],
-                            _adj_mode,
-                            _adj_value_decimal,
-                            OUTPUTS_DIR,
-                            manual_append_df=result.get("manual_append_df"),
-                        )
-                        st.session_state["adjusted_result"] = adj_result
-                    except Exception as exc:
-                        st.session_state["adjusted_error"] = str(exc)
 
                 st.success("Execucao concluida. O export final consolidado foi gerado em outputs/.")
             except Exception as exc:
@@ -718,7 +666,6 @@ def _render_validation_tab() -> None:
     st.subheader("Metricas da execucao")
     metrics = result["metrics"]
     comparison = result["comparison"]
-    manual_append_count = int(result.get("manual_append_count", 0))
     metric_row_1 = st.columns(5)
     metric_row_1[0].metric("Linhas do anunciante", metrics["total_advertiser_rows"])
     metric_row_1[1].metric("Linhas do MASTER", metrics["master_total_rows"])
@@ -744,11 +691,6 @@ def _render_validation_tab() -> None:
         "O export final consolidado = novamente aprovadas por match + ja aprovadas no MASTER. "
         "Linhas `paid` ficam fora do export e fora do balanceamento."
     )
-    if manual_append_count > 0:
-        st.info(
-            f"{manual_append_count} linha(s) do Complemento manual foram anexadas ao final dos exports "
-            "sem entrar no matching."
-        )
 
     # ---- Zero-match diagnostic ----
     if metrics["newly_approved_count"] == 0:
@@ -872,9 +814,23 @@ def _render_validation_tab() -> None:
                     floor=balance_floor_stored,
                     priority_publisher_id=priority_publisher_stored or None,
                     priority_pct=priority_pct_stored,
-                    manual_append_df=result.get("manual_append_df"),
                 )
                 st.session_state["balanced_result"] = balanced
+                applied_manual_append_df = st.session_state.get("validation_applied_manual_append_df")
+                if isinstance(applied_manual_append_df, pd.DataFrame) and not applied_manual_append_df.empty:
+                    balanced_manual = runtime_export_module.persist_balanced_export(
+                        export_internal_df,
+                        fin_diff_stored,
+                        OUTPUTS_DIR,
+                        floor=balance_floor_stored,
+                        priority_publisher_id=priority_publisher_stored or None,
+                        priority_pct=priority_pct_stored,
+                        manual_append_df=applied_manual_append_df,
+                        filename_prefix="validated_export_balanced_manual_append",
+                    )
+                    st.session_state["balanced_manual_result"] = balanced_manual
+                else:
+                    st.session_state.pop("balanced_manual_result", None)
                 st.session_state.pop("balanced_error", None)
             except Exception as exc:
                 st.session_state["balanced_error"] = str(exc)
@@ -884,6 +840,273 @@ def _render_validation_tab() -> None:
             "Se quiser gerar um export equilibrado depois, primeiro informe o total pago pelo anunciante na reconciliacao financeira."
         )
 
+    applied_manual_append_df = st.session_state.get("validation_applied_manual_append_df")
+
+    with st.expander("Ajuste de payout (pos-validacao)", expanded=False):
+        st.caption(
+            "Acao de pos-processamento. Usa o resultado ja validado, nao reexecuta o matching "
+            "e nao altera o export base original."
+        )
+        post_adj_mode_label = st.radio(
+            "Modo de ajuste",
+            options=[label for label in _ADJ_MODE_MAP.keys() if label != "Sem ajuste"],
+            key="post_adj_mode",
+        )
+        post_adj_mode = _ADJ_MODE_MAP[post_adj_mode_label]
+        post_adj_value_decimal = Decimal(
+            str(
+                st.number_input(
+                    _ADJ_LABELS[post_adj_mode],
+                    min_value=0.0,
+                    value=0.0,
+                    step=0.01,
+                    format="%.2f",
+                    key="post_adj_value",
+                )
+            )
+        )
+        if st.button("Aplicar ajuste de payout", key="apply_post_adjustment_btn"):
+            if post_adj_value_decimal <= Decimal("0"):
+                st.error("Informe um valor maior que zero para aplicar o ajuste de payout.")
+            else:
+                try:
+                    runtime_export_module = _load_runtime_module("core.export")
+                    adjusted = runtime_export_module.persist_payout_adjusted_export(
+                        result["export_internal_df"],
+                        post_adj_mode,
+                        post_adj_value_decimal,
+                        OUTPUTS_DIR,
+                        filename_prefix="validated_export_payout_adjusted",
+                    )
+                    st.session_state["adjusted_result"] = adjusted
+                    st.session_state["validation_adjustment_config"] = {
+                        "mode": post_adj_mode,
+                        "mode_label": post_adj_mode_label,
+                        "value": str(post_adj_value_decimal),
+                    }
+                    if isinstance(applied_manual_append_df, pd.DataFrame) and not applied_manual_append_df.empty:
+                        adjusted_manual = runtime_export_module.persist_payout_adjusted_export(
+                            result["export_internal_df"],
+                            post_adj_mode,
+                            post_adj_value_decimal,
+                            OUTPUTS_DIR,
+                            manual_append_df=applied_manual_append_df,
+                            filename_prefix="validated_export_payout_adjusted_manual_append",
+                        )
+                        st.session_state["adjusted_manual_result"] = adjusted_manual
+                        st.session_state["validation_export_view"] = "adjusted_manual"
+                    else:
+                        st.session_state.pop("adjusted_manual_result", None)
+                        st.session_state["validation_export_view"] = "adjusted"
+                    st.session_state.pop("adjusted_error", None)
+                    st.success("Ajuste de payout aplicado ao snapshot atual da validacao.")
+                except Exception as exc:
+                    st.session_state["adjusted_error"] = str(exc)
+
+    with st.expander("Complemento manual (pos-validacao)", expanded=False):
+        st.caption(
+            "Acao de pos-processamento. As linhas anexadas entram no final dos exports, "
+            "nao participam do matching e nao contam como evidencia do anunciante."
+        )
+        manual_input_mode = st.radio(
+            "Modo de entrada",
+            options=["Editar/colar manualmente", "Subir arquivo"],
+            key="validation_post_manual_input_mode",
+            horizontal=True,
+        )
+        queued_manual_df = pd.DataFrame(columns=_VALIDATION_MANUAL_COLUMNS)
+
+        if manual_input_mode == "Editar/colar manualmente":
+            if "validation_post_manual_seed_df" not in st.session_state:
+                st.session_state["validation_post_manual_seed_df"] = _build_validation_manual_dataframe()
+            validation_post_manual_version = int(st.session_state.get("validation_post_manual_editor_version", 0))
+            validation_post_manual_editor = st.data_editor(
+                st.session_state["validation_post_manual_seed_df"],
+                key=f"validation_post_manual_editor_{validation_post_manual_version}",
+                num_rows="dynamic",
+                hide_index=True,
+                use_container_width=True,
+                height=360,
+                column_config={
+                    column: st.column_config.TextColumn(column)
+                    for column in _VALIDATION_MANUAL_COLUMNS
+                },
+            )
+            queued_manual_df = _prepare_validation_manual_dataframe(validation_post_manual_editor)
+            if st.button("Limpar grade do complemento manual", key="clear_post_validation_manual_rows_btn"):
+                st.session_state["validation_post_manual_seed_df"] = _build_validation_manual_dataframe()
+                st.session_state["validation_post_manual_editor_version"] = validation_post_manual_version + 1
+                st.rerun()
+        else:
+            manual_upload = st.file_uploader(
+                "Arquivo do complemento manual",
+                type=["csv", "xlsx", "xlsm", "xls"],
+                key="validation_post_manual_file",
+            )
+            if manual_upload is not None:
+                try:
+                    uploaded_manual_df = read_table(manual_upload)
+                    queued_manual_df = _map_uploaded_validation_manual_dataframe(uploaded_manual_df)
+                    st.caption(
+                        f"Arquivo carregado para complemento manual - {len(queued_manual_df)} linha(s) validas no schema esperado."
+                    )
+                except Exception as exc:
+                    st.error(f"Falha ao ler o arquivo do complemento manual: {exc}")
+
+        if queued_manual_df.empty:
+            st.info("Nenhuma linha manual pronta para anexacao nesta etapa.")
+        else:
+            st.success(f"{len(queued_manual_df)} linha(s) prontas para anexar ao final dos exports.")
+            st.dataframe(queued_manual_df.head(10), use_container_width=True, height=220, hide_index=True)
+
+        action_col1, action_col2 = st.columns(2)
+        if action_col1.button("Anexar complemento manual aos exports", key="apply_post_manual_append_btn"):
+            if queued_manual_df.empty:
+                st.error("Preencha a grade ou envie um arquivo com ao menos uma linha valida.")
+            else:
+                try:
+                    runtime_export_module = _load_runtime_module("core.export")
+                    manual_variant = runtime_export_module.persist_manual_appended_export(
+                        result["export_base_df"],
+                        OUTPUTS_DIR,
+                        queued_manual_df,
+                        filename_prefix="validated_export_manual_append",
+                    )
+                    st.session_state["validation_applied_manual_append_df"] = queued_manual_df
+                    st.session_state["manual_append_variant_result"] = manual_variant
+                    if st.session_state.get("adjusted_result"):
+                        adjustment_config = st.session_state.get("validation_adjustment_config", {})
+                        adjustment_value = Decimal(str(adjustment_config.get("value", "0")))
+                        adjusted_manual = runtime_export_module.persist_payout_adjusted_export(
+                            result["export_internal_df"],
+                            adjustment_config.get("mode", "none"),
+                            adjustment_value,
+                            OUTPUTS_DIR,
+                            manual_append_df=queued_manual_df,
+                            filename_prefix="validated_export_payout_adjusted_manual_append",
+                        )
+                        st.session_state["adjusted_manual_result"] = adjusted_manual
+                        st.session_state["validation_export_view"] = "adjusted_manual"
+                    else:
+                        st.session_state.pop("adjusted_manual_result", None)
+                        st.session_state["validation_export_view"] = "manual"
+
+                    balanced_base_result = st.session_state.get("balanced_result")
+                    if balanced_base_result:
+                        balanced_manual = runtime_export_module.persist_balanced_export(
+                            result["export_internal_df"],
+                            fin_diff_stored if adv_ref_stored > Decimal("0") else Decimal("0"),
+                            OUTPUTS_DIR,
+                            floor=balance_floor_stored,
+                            priority_publisher_id=priority_publisher_stored or None,
+                            priority_pct=priority_pct_stored,
+                            manual_append_df=queued_manual_df,
+                            filename_prefix="validated_export_balanced_manual_append",
+                        )
+                        st.session_state["balanced_manual_result"] = balanced_manual
+                    else:
+                        st.session_state.pop("balanced_manual_result", None)
+                    st.success("Complemento manual anexado aos exports derivados do resultado atual.")
+                except Exception as exc:
+                    st.error(f"Falha ao anexar complemento manual: {exc}")
+
+        if action_col2.button("Remover complemento manual aplicado", key="clear_applied_post_manual_append_btn"):
+            st.session_state.pop("validation_applied_manual_append_df", None)
+            st.session_state.pop("manual_append_variant_result", None)
+            st.session_state.pop("adjusted_manual_result", None)
+            st.session_state.pop("balanced_manual_result", None)
+            current_view = str(st.session_state.get("validation_export_view", "base"))
+            st.session_state["validation_export_view"] = "adjusted" if current_view == "adjusted_manual" and st.session_state.get("adjusted_result") else "base"
+            st.rerun()
+
+    export_variants: dict[str, dict[str, Any]] = {
+        "base": {
+            "view_label": "base",
+            "download_label": "Baixar export base validado (CSV)",
+            "df": result["export_base_df"],
+            "path": result["paths"]["export"],
+            "manual_append_count": 0,
+            "adjusted_applied": False,
+        }
+    }
+    manual_append_variant_result = st.session_state.get("manual_append_variant_result")
+    if manual_append_variant_result:
+        export_variants["manual"] = {
+            "view_label": "com complemento manual",
+            "download_label": "Baixar export com complemento manual (CSV)",
+            "df": manual_append_variant_result["df"],
+            "path": manual_append_variant_result["path"],
+            "manual_append_count": int(manual_append_variant_result.get("manual_append_count", 0)),
+            "adjusted_applied": False,
+        }
+    adjusted_result = st.session_state.get("adjusted_result")
+    if adjusted_result:
+        export_variants["adjusted"] = {
+            "view_label": "ajustado",
+            "download_label": "Baixar export com ajuste de payout (CSV)",
+            "df": adjusted_result["df"],
+            "path": adjusted_result["path"],
+            "manual_append_count": int(adjusted_result.get("manual_append_count", 0)),
+            "adjusted_applied": True,
+        }
+    adjusted_manual_result = st.session_state.get("adjusted_manual_result")
+    if adjusted_manual_result:
+        export_variants["adjusted_manual"] = {
+            "view_label": "ajustado + complemento manual",
+            "download_label": "Baixar export com ajuste de payout + complemento manual (CSV)",
+            "df": adjusted_manual_result["df"],
+            "path": adjusted_manual_result["path"],
+            "manual_append_count": int(adjusted_manual_result.get("manual_append_count", 0)),
+            "adjusted_applied": True,
+        }
+
+    current_view_key = str(st.session_state.get("validation_export_view", "base"))
+    if current_view_key not in export_variants:
+        current_view_key = "base"
+        st.session_state["validation_export_view"] = "base"
+
+    st.subheader("Resumo pos-validacao")
+    selected_export_view = st.radio(
+        "Tipo de export principal em visualizacao",
+        options=list(export_variants.keys()),
+        format_func=lambda option: export_variants[option]["view_label"],
+        key="validation_export_view",
+        horizontal=True,
+    )
+    current_export_variant = export_variants[selected_export_view]
+    current_export_total = _sum_export_payout_total(current_export_variant["df"])
+    current_difference = adv_ref_stored - current_export_total if adv_ref_stored > Decimal("0") else None
+
+    summary_col1, summary_col2, summary_col3 = st.columns(3)
+    summary_col1.metric("Total exportado atual", format_money(current_export_total))
+    summary_col2.metric(
+        "Total pago pelo anunciante",
+        format_money(adv_ref_stored) if adv_ref_stored > Decimal("0") else "Nao informado",
+    )
+    summary_col3.metric(
+        "Diferenca atual",
+        format_money(current_difference) if current_difference is not None else "Nao informado",
+    )
+
+    summary_col4, summary_col5, summary_col6 = st.columns(3)
+    summary_col4.metric(
+        "Quantidade de linhas manuais anexadas",
+        current_export_variant["manual_append_count"],
+    )
+    summary_col5.metric(
+        "Ajuste de payout aplicado?",
+        "Sim" if current_export_variant["adjusted_applied"] else "Nao",
+    )
+    summary_col6.metric(
+        "Tipo de export atual em visualizacao",
+        current_export_variant["view_label"],
+    )
+
+    st.caption(
+        "As acoes de pos-validacao trabalham sobre o snapshot ja validado. "
+        "Elas nao reexecutam o matching nem alteram a verdade da correspondencia."
+    )
+
     # ---- Balanced export result (explicit action) ----
     balanced_error = st.session_state.get("balanced_error")
     if balanced_error:
@@ -891,7 +1114,7 @@ def _render_validation_tab() -> None:
 
     balanced_result = st.session_state.get("balanced_result")
     if balanced_result:
-        with st.expander("Export equilibrado (gerado apos acao do operador)", expanded=True):
+        with st.expander("Export equilibrado (pos-validacao)", expanded=True):
             st.caption(
                 f"Total alvo: {balanced_result['target_total']} | "
                 f"Total alcancado: {balanced_result['actual_total']} | "
@@ -923,16 +1146,35 @@ def _render_validation_tab() -> None:
                 mime="text/csv",
             )
 
-    # ---- Adjusted export result (auto-generated during run) ----
+    balanced_manual_result = st.session_state.get("balanced_manual_result")
+    if balanced_manual_result:
+        with st.expander("Export equilibrado + complemento manual (pos-validacao)", expanded=False):
+            st.caption(
+                f"Total alvo: {balanced_manual_result['target_total']} | "
+                f"Total alcancado: {balanced_manual_result['actual_total']} | "
+                f"Delta medio por conversao: {balanced_manual_result['average_delta']} | "
+                f"Piso minimo: {balanced_manual_result['floor']} | "
+                f"Arquivo: {Path(balanced_manual_result['path']).name}"
+            )
+            st.caption("As linhas manuais foram anexadas ao final do export equilibrado sem alteracao.")
+            _render_preview_caption(int(balanced_manual_result.get("row_count", len(balanced_manual_result["df"]))), 50)
+            st.dataframe(balanced_manual_result["df"].head(50), use_container_width=True)
+            st.download_button(
+                label="Baixar export equilibrado + complemento manual (CSV)",
+                data=_read_file_bytes(balanced_manual_result["path"]),
+                file_name=Path(balanced_manual_result["path"]).name,
+                mime="text/csv",
+            )
+
+    # ---- Adjusted export result (post-processing action) ----
     adjusted_error = st.session_state.get("adjusted_error")
     if adjusted_error:
         st.error(f"Falha ao gerar export ajustado: {adjusted_error}")
 
-    adjusted_result = st.session_state.get("adjusted_result")
     if adjusted_result:
-        with st.expander("Export com payout ajustado (gerado automaticamente)", expanded=True):
+        with st.expander("Export com payout ajustado (pos-validacao)", expanded=True):
             st.caption(
-                f"Modo: {run_config.get('adj_mode_label', '')} | "
+                f"Modo: {st.session_state.get('validation_adjustment_config', {}).get('mode_label', '')} | "
                 f"Total alvo: {adjusted_result['target_total']} | "
                 f"Delta medio: {adjusted_result['average_delta']} | "
                 f"Arquivo: {Path(adjusted_result['path']).name}"
@@ -955,14 +1197,35 @@ def _render_validation_tab() -> None:
                 mime="text/csv",
             )
 
+    if adjusted_manual_result:
+        with st.expander("Export com ajuste de payout + complemento manual (pos-validacao)", expanded=False):
+            st.caption(
+                f"Modo: {st.session_state.get('validation_adjustment_config', {}).get('mode_label', '')} | "
+                f"Total alvo: {adjusted_manual_result['target_total']} | "
+                f"Delta medio: {adjusted_manual_result['average_delta']} | "
+                f"Arquivo: {Path(adjusted_manual_result['path']).name}"
+            )
+            st.caption("As linhas manuais foram anexadas ao final do export ajustado sem alteracao.")
+            _render_preview_caption(len(adjusted_manual_result["df"]), 50)
+            st.dataframe(adjusted_manual_result["df"].head(50), use_container_width=True)
+            st.download_button(
+                label="Baixar export com ajuste de payout + complemento manual (CSV)",
+                data=_read_file_bytes(adjusted_manual_result["path"]),
+                file_name=Path(adjusted_manual_result["path"]).name,
+                mime="text/csv",
+            )
+
     # ---- Preview tables ----
     st.subheader("Pre-visualizacao dos resultados")
     prev_col1, prev_col2 = st.columns(2)
     with prev_col1:
-        export_df = result["export_df"]
-        st.markdown(f"**Export final consolidado** ({len(export_df)} linhas)")
-        _render_preview_caption(len(export_df), 30)
-        st.dataframe(export_df.head(30), use_container_width=True, height=300)
+        export_preview_df = current_export_variant["df"]
+        st.markdown(
+            f"**Export principal em visualizacao: {current_export_variant['view_label']}** "
+            f"({len(export_preview_df)} linhas)"
+        )
+        _render_preview_caption(len(export_preview_df), 30)
+        st.dataframe(export_preview_df.head(30), use_container_width=True, height=300)
     with prev_col2:
         needs_df = result["needs_review_df"]
         st.markdown(f"**Linhas em revisao** ({len(needs_df)} linhas)")
@@ -980,29 +1243,59 @@ def _render_validation_tab() -> None:
         else:
             st.info("Nenhum dado de auditoria disponivel.")
 
-    manual_append_preview_df = result.get("manual_append_df")
-    if manual_append_count > 0 and manual_append_preview_df is not None and not manual_append_preview_df.empty:
+    applied_manual_preview_df = st.session_state.get("validation_applied_manual_append_df")
+    if isinstance(applied_manual_preview_df, pd.DataFrame) and not applied_manual_preview_df.empty:
         with st.expander("Linhas do Complemento manual anexadas ao export", expanded=False):
-            _render_preview_caption(len(manual_append_preview_df), 20)
-            st.dataframe(manual_append_preview_df.head(20), use_container_width=True, height=260, hide_index=True)
+            _render_preview_caption(len(applied_manual_preview_df), 20)
+            st.dataframe(applied_manual_preview_df.head(20), use_container_width=True, height=260, hide_index=True)
 
     # ---- Downloads ----
-    st.subheader("Downloads")
+    st.subheader("Downloads finais")
     paths = result["paths"]
     balanced_result = st.session_state.get("balanced_result")
+    balanced_manual_result = st.session_state.get("balanced_manual_result")
     dl_col1, dl_col2, dl_col3 = st.columns(3)
     with dl_col1:
         st.download_button(
-            label="Export final consolidado (sem equilibrio) (CSV)",
+            label="Baixar export base validado (CSV)",
             data=_read_file_bytes(paths["export"]),
             file_name=Path(paths["export"]).name,
             mime="text/csv",
         )
+        if manual_append_variant_result:
+            st.download_button(
+                label="Baixar export com complemento manual (CSV)",
+                data=_read_file_bytes(manual_append_variant_result["path"]),
+                file_name=Path(manual_append_variant_result["path"]).name,
+                mime="text/csv",
+            )
+        if adjusted_result:
+            st.download_button(
+                label="Baixar export com ajuste de payout (CSV)",
+                data=_read_file_bytes(adjusted_result["path"]),
+                file_name=Path(adjusted_result["path"]).name,
+                mime="text/csv",
+            )
+        if adjusted_manual_result:
+            st.download_button(
+                label="Baixar export com ajuste de payout + complemento manual (CSV)",
+                data=_read_file_bytes(adjusted_manual_result["path"]),
+                file_name=Path(adjusted_manual_result["path"]).name,
+                mime="text/csv",
+            )
+    with dl_col2:
         if balanced_result:
             st.download_button(
-                label="Export equilibrado (CSV)",
+                label="Baixar export equilibrado (CSV)",
                 data=_read_file_bytes(balanced_result["path"]),
                 file_name=Path(balanced_result["path"]).name,
+                mime="text/csv",
+            )
+        if balanced_manual_result:
+            st.download_button(
+                label="Baixar export equilibrado + complemento manual (CSV)",
+                data=_read_file_bytes(balanced_manual_result["path"]),
+                file_name=Path(balanced_manual_result["path"]).name,
                 mime="text/csv",
             )
         st.download_button(
@@ -1011,20 +1304,19 @@ def _render_validation_tab() -> None:
             file_name=Path(paths["needs_review"]).name,
             mime="text/csv",
         )
-    with dl_col2:
         st.download_button(
             label="Diff de status (CSV)",
             data=_read_file_bytes(paths["diff"]),
             file_name=Path(paths["diff"]).name,
             mime="text/csv",
         )
+    with dl_col3:
         st.download_button(
             label="Audit de correspondencia (CSV)",
             data=_read_file_bytes(paths["audit"]),
             file_name=Path(paths["audit"]).name,
             mime="text/csv",
         )
-    with dl_col3:
         st.download_button(
             label="Log TXT",
             data=_read_file_bytes(paths["log_txt"]),
@@ -1039,8 +1331,8 @@ def _render_validation_tab() -> None:
         )
 
     st.caption(
-        "Arquivos gerados em: "
-        + ", ".join([paths["export"], paths["diff"], paths["needs_review"], paths["audit"]])
+        "Os arquivos da validacao e das variantes de pos-processamento sao gerados em outputs/. "
+        "Use os botoes acima para baixar a versao exata do export que deseja analisar."
     )
 
 
