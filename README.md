@@ -166,6 +166,12 @@ Fluxos suportados:
 - `Usar template unico colado manualmente`: o mesmo template e aplicado a todas as linhas
 - `Editar/colar dados manualmente`: usa uma grade editavel com colunas `VALOR`, `CLICK`, `TRANSACTION` e `POSTBACK`
 
+Melhorias de UX na grade manual:
+
+- area visivel da grade ampliada para reduzir a disputa com a barra de rolagem
+- coluna `POSTBACK` mais larga para facilitar edicao
+- atalho `Duplicar valor para baixo` como fallback quando a alca de preenchimento ficar desconfortavel
+
 Regra de substituicao:
 
 - o app substitui placeholders embrulhados como `{CLICK}` ou `{{CLICK}}`
@@ -191,6 +197,30 @@ Saida operacional:
 - preview da tabela processada
 - bloco copiavel da coluna `POSTBACK_FINAL`
 - download CSV do resultado
+
+## Modo ID
+
+O `Modo ID` continua com a mesma UX, mas a inferencia de padrao agora preserva melhor a familia estrutural dos exemplos.
+
+Refinamentos aplicados:
+
+- segmentos literais estaveis passam a ser mantidos, inclusive quando sao alfanumericos
+- separadores fixos continuam preservados
+- blocos repetidos como `000000` tendem a continuar fixos quando o exemplo indicar isso
+- cada posicao respeita melhor o tipo original de caractere: letra continua letra, numero continua numero
+- quando a variacao observada e estreita, a geracao prioriza primeiro os caracteres vistos nos exemplos e so amplia para o mesmo tipo quando precisa criar combinacoes novas
+
+## Validacao: Complemento manual
+
+O modulo de `Validacao` agora possui a secao `Complemento manual`.
+
+Uso:
+
+- permite colar ou digitar linhas diretamente em uma grade com colunas predefinidas de export
+- essas linhas nao participam do matching
+- essas linhas nao criam matches nem alteram a verdade da reconciliacao
+- essas linhas sao anexadas ao final do `validated_export_<ts>.csv`
+- se houver `validated_export_balanced_<ts>.csv` ou `validated_export_payout_adjusted_<ts>.csv`, elas tambem entram no final desses arquivos sem alteracao
 
 ## Modo Comissao
 
@@ -221,9 +251,9 @@ Se o total for pequeno demais para respeitar o piso minimo por linha na quantida
 
 | Arquivo | Descricao |
 |---|---|
-| `validated_export_<ts>.csv` | Export final consolidado sem equilibrio |
-| `validated_export_balanced_<ts>.csv` | Segundo arquivo opcional, gerado so apos clicar em `Gerar export equilibrado` |
-| `validated_export_payout_adjusted_<ts>.csv` | Export com ajuste de payout |
+| `validated_export_<ts>.csv` | Export final consolidado sem equilibrio; inclui `Complemento manual` no final quando habilitado |
+| `validated_export_balanced_<ts>.csv` | Segundo arquivo opcional; inclui `Complemento manual` no final sem alterar essas linhas |
+| `validated_export_payout_adjusted_<ts>.csv` | Export com ajuste de payout; inclui `Complemento manual` no final sem alterar essas linhas |
 | `match_audit_<ts>.csv` | Auditoria detalhada do matching e da elegibilidade do MASTER, sem `publisher_id` / `affiliate_id` |
 | `needs_review_<ts>.csv` | Casos realmente enviados para revisao, sem `publisher_id` / `affiliate_id` |
 | `diff_<ts>.csv` | Mudancas de status nas linhas ativas do MASTER, sem `publisher_id` / `affiliate_id` |

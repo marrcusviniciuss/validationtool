@@ -106,6 +106,59 @@ O motor v2 foi preservado, mas aplicado apenas aos candidatos ativos (`pending/d
 - aprovacao implicita continua opcional
 - aliases customizados de status continuam suportados
 
+## Complemento Manual na Validacao
+
+### Objetivo
+
+A aba de `Validacao` agora possui a secao `Complemento manual`.
+
+Ela existe para anexar linhas diretamente aos arquivos finais de export sem interferir no motor de matching.
+
+### Colunas predefinidas
+
+- `click_id`
+- `offer_id`
+- `txn_id`
+- `sub1`
+- `sub2`
+- `sub3`
+- `sub4`
+- `sale_amount`
+- `revenue`
+- `payout`
+- `sale_currency`
+- `status`
+- `created`
+- `conversion_id`
+
+### Regra de negocio
+
+As linhas do `Complemento manual`:
+
+- nao participam do matching
+- nao contam como evidencia do anunciante
+- nao criam matches artificiais
+- nao entram na base da reconciliacao
+- nao sao alteradas pelo balanceamento
+- nao sao alteradas pelo ajuste de payout
+
+### Regra de export
+
+Depois que o dataset normal de validacao e produzido, o app anexa as linhas manuais ao final de:
+
+- `validated_export_<ts>.csv`
+- `validated_export_balanced_<ts>.csv`
+- `validated_export_payout_adjusted_<ts>.csv`
+
+Essas linhas entram sempre no final dos arquivos e permanecem inalteradas.
+
+### UI do complemento
+
+- checkbox para habilitar a secao
+- grade editavel com colunas predefinidas
+- preview da quantidade de linhas manuais prontas para anexacao
+- botao para limpar a fila manual da execucao atual
+
 ## MASTER Operational Outcomes in Audit
 
 Se uma linha do anunciante apontar para uma linha do MASTER ja `approved`, o audit registra:
@@ -217,6 +270,16 @@ Colunas base da grade:
 
 As linhas totalmente vazias sao ignoradas na geracao.
 
+### Refino de UX da grade
+
+Para reduzir a disputa entre a barra de rolagem e a alca de preenchimento no canto inferior direito:
+
+- a area visivel da grade foi ampliada antes do scroll vertical
+- a coluna `POSTBACK` ficou mais larga
+- existe o atalho `Duplicar valor para baixo` como fallback operacional
+
+Esse atalho replica o valor de uma linha para as linhas abaixo dentro da coluna escolhida, inclusive criando linhas vazias adicionais quando necessario.
+
 ### Regra de substituicao
 
 O preenchimento e deterministico e case-insensitive no matching dos nomes de colunas.
@@ -269,6 +332,31 @@ Padrao da UI:
 - area de texto preenchida com os mesmos valores para fallback manual via `Ctrl+C`
 
 Isso facilita colar o resultado em outra planilha ou ferramenta operacional.
+
+## Modo ID
+
+### Objetivo
+
+O `Modo ID` continua focado em gerar IDs novos a partir de exemplos, mas agora com fidelidade estrutural maior.
+
+### Refinos de inferencia
+
+O gerador passou a:
+
+- tratar caracteres estaveis como literais, inclusive quando sao letras ou numeros
+- preservar separadores e substrings fixas compartilhadas entre os exemplos
+- respeitar rigidamente a classe por posicao sempre que o padrao indicar isso
+- manter blocos repetidos, como zeros em serie, quando eles aparecem como parte estavel do molde
+- priorizar primeiro os caracteres realmente observados em cada posicao antes de ampliar para o pool completo da mesma classe
+
+### Resultado pratico
+
+Isso reduz casos em que:
+
+- uma letra virava numero sem justificativa
+- um prefixo fixo passava a variar demais
+- blocos como `000000` eram perdidos
+- os IDs gerados pareciam aleatorios demais em comparacao com os exemplos
 
 ## Modo Comissao
 
@@ -383,9 +471,9 @@ Na area de downloads, a distincao principal e:
 
 | Arquivo | Descricao |
 |---|---|
-| `validated_export_<ts>.csv` | Export final consolidado sem equilibrio: novas aprovacoes + carry-forward aprovado |
-| `validated_export_balanced_<ts>.csv` | Segundo arquivo opcional, gerado apenas apos `Gerar export equilibrado` |
-| `validated_export_payout_adjusted_<ts>.csv` | Export com ajuste de payout |
+| `validated_export_<ts>.csv` | Export final consolidado sem equilibrio: novas aprovacoes + carry-forward aprovado + `Complemento manual` ao final quando habilitado |
+| `validated_export_balanced_<ts>.csv` | Segundo arquivo opcional, gerado apenas apos `Gerar export equilibrado`, com `Complemento manual` anexado ao final sem alteracao |
+| `validated_export_payout_adjusted_<ts>.csv` | Export com ajuste de payout, com `Complemento manual` anexado ao final sem alteracao |
 | `match_audit_<ts>.csv` | Auditoria de match e elegibilidade do MASTER, sem identificadores de affiliate/publisher |
 | `needs_review_<ts>.csv` | Casos que realmente exigem revisao, sem identificadores de affiliate/publisher |
 | `diff_<ts>.csv` | Mudancas de status nas linhas ativas do MASTER, sem identificadores de affiliate/publisher |
@@ -421,3 +509,6 @@ streamlit run app.py
 9. Confirme que `POSTBACK_FINAL` pode ser copiado pelo botao e tambem pela area de texto.
 10. No `Modo Comissao`, gere um caso `Exato` e confirme soma exata.
 11. No `Modo Comissao`, gere um caso `Media` e confirme variacao positiva com soma final fechando o total.
+12. Na `Validacao`, habilite `Complemento manual`, cole 1 ou 2 linhas e confirme que elas aparecem no final do `validated_export`.
+13. Gere tambem o export equilibrado e confirme que as linhas do `Complemento manual` continuam no final sem alteracao.
+14. Gere um ajuste de payout e confirme que as linhas do `Complemento manual` continuam no final sem alteracao.

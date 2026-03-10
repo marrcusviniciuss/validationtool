@@ -43,6 +43,22 @@ _ADJ_LABELS = {
     "set_target": "Total alvo de payout",
 }
 _POSTBACK_MANUAL_COLUMNS = ["VALOR", "CLICK", "TRANSACTION", "POSTBACK"]
+_VALIDATION_MANUAL_COLUMNS = [
+    "click_id",
+    "offer_id",
+    "txn_id",
+    "sub1",
+    "sub2",
+    "sub3",
+    "sub4",
+    "sale_amount",
+    "revenue",
+    "payout",
+    "sale_currency",
+    "status",
+    "created",
+    "conversion_id",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -137,19 +153,120 @@ def _build_dataframe_signature(df: Any) -> str:
     return digest
 
 
-def _build_postback_manual_dataframe(rows: int = 5) -> pd.DataFrame:
-    return pd.DataFrame([{column: "" for column in _POSTBACK_MANUAL_COLUMNS} for _ in range(rows)])
+def _build_empty_manual_dataframe(columns: list[str], rows: int = 5) -> pd.DataFrame:
+    return pd.DataFrame([{column: "" for column in columns} for _ in range(rows)])
 
 
-def _prepare_manual_postback_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
+def _prepare_manual_editor_dataframe(dataframe: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     working_df = dataframe.copy().fillna("")
-    for column in _POSTBACK_MANUAL_COLUMNS:
+    for column in columns:
         if column not in working_df.columns:
             working_df[column] = ""
-    ordered_columns = [column for column in _POSTBACK_MANUAL_COLUMNS if column in working_df.columns]
+    ordered_columns = [column for column in columns if column in working_df.columns]
     compact_df = working_df[ordered_columns].astype(str)
     non_empty_mask = compact_df.apply(lambda row: any(cell.strip() for cell in row), axis=1)
     return compact_df.loc[non_empty_mask].reset_index(drop=True)
+
+
+def _build_postback_manual_dataframe(rows: int = 8) -> pd.DataFrame:
+    return _build_empty_manual_dataframe(_POSTBACK_MANUAL_COLUMNS, rows=rows)
+
+
+def _build_validation_manual_dataframe(rows: int = 6) -> pd.DataFrame:
+    return _build_empty_manual_dataframe(_VALIDATION_MANUAL_COLUMNS, rows=rows)
+
+
+def _prepare_manual_postback_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
+    return _prepare_manual_editor_dataframe(dataframe, _POSTBACK_MANUAL_COLUMNS)
+
+
+def _prepare_validation_manual_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
+    return _prepare_manual_editor_dataframe(dataframe, _VALIDATION_MANUAL_COLUMNS)
+
+
+def _apply_fill_down_to_dataframe(
+    dataframe: pd.DataFrame,
+    *,
+    columns: list[str],
+    column_name: str,
+    source_row: int,
+    end_row: int,
+) -> pd.DataFrame:
+    if column_name not in columns:
+        return dataframe
+
+    working_df = dataframe.copy().fillna("")
+    for column in columns:
+        if column not in working_df.columns:
+            working_df[column] = ""
+    working_df = working_df.loc[:, columns].astype(str).reset_index(drop=True)
+
+    desired_length = max(len(working_df), end_row)
+    if desired_length > len(working_df):
+        extra_rows = desired_length - len(working_df)
+        padding_df = _build_empty_manual_dataframe(columns, rows=extra_rows)
+        working_df = pd.concat([working_df, padding_df], ignore_index=True)
+
+    source_index = max(0, source_row - 1)
+    target_end_index = max(source_index, end_row - 1)
+    if source_index >= len(working_df):
+        return working_df
+
+    source_value = str(working_df.iloc[source_index].get(column_name, "")).strip()
+    for row_index in range(source_index + 1, target_end_index + 1):
+        working_df.at[row_index, column_name] = source_value
+    return working_df
+
+
+def _render_fill_down_helper(
+    *,
+    dataframe: pd.DataFrame,
+    columns: list[str],
+    seed_state_key: str,
+    version_state_key: str,
+    scope_label: str,
+) -> None:
+    current_rows = max(len(dataframe), 1)
+    with st.expander("Atalho: duplicar valor para baixo", expanded=False):
+        st.caption(
+            f"Se a barra de rolagem atrapalhar a alca de preenchimento da grade de {scope_label}, "
+            "use este atalho para repetir o valor de uma linha para as linhas abaixo."
+        )
+        fill_col1, fill_col2, fill_col3 = st.columns(3)
+        selected_column = fill_col1.selectbox(
+            "Coluna para duplicar",
+            options=columns,
+            key=f"{seed_state_key}_fill_column",
+        )
+        source_row = int(
+            fill_col2.number_input(
+                "Linha de origem",
+                min_value=1,
+                value=1,
+                step=1,
+                key=f"{seed_state_key}_fill_source_row",
+            )
+        )
+        end_row = int(
+            fill_col3.number_input(
+                "Duplicar ate a linha",
+                min_value=1,
+                value=max(2, current_rows),
+                step=1,
+                key=f"{seed_state_key}_fill_end_row",
+            )
+        )
+        if st.button("Aplicar duplicacao", key=f"{seed_state_key}_fill_apply_btn"):
+            updated_df = _apply_fill_down_to_dataframe(
+                dataframe,
+                columns=columns,
+                column_name=selected_column,
+                source_row=source_row,
+                end_row=end_row,
+            )
+            st.session_state[seed_state_key] = updated_df
+            st.session_state[version_state_key] = int(st.session_state.get(version_state_key, 0)) + 1
+            st.rerun()
 
 
 def _render_mapping_ui(columns: list[str], auto_mapping: dict[str, str], has_missing: bool) -> dict[str, str]:
@@ -180,6 +297,7 @@ def _run_pipeline(
     implicit_approved: bool,
     status_keywords: dict[str, list[str]],
     priority_publisher_id: str | None,
+    manual_append_df: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     # Streamlit reruns the script in-process; reloading local business modules keeps
     # the runtime aligned with the latest code on disk during focused refinement passes.
@@ -206,7 +324,13 @@ def _run_pipeline(
         status_keywords=status_keywords,
         priority_publisher_id=priority_publisher_id,
     )
-    output_result = core_export_module.persist_outputs(master_normalized, match_result, logger, OUTPUTS_DIR)
+    output_result = core_export_module.persist_outputs(
+        master_normalized,
+        match_result,
+        logger,
+        OUTPUTS_DIR,
+        manual_append_df=manual_append_df,
+    )
     return output_result
 
 
@@ -445,6 +569,48 @@ def _render_validation_tab() -> None:
             )
         )
 
+    manual_append_df = pd.DataFrame(columns=_VALIDATION_MANUAL_COLUMNS)
+    enable_manual_append = False
+    with st.expander("Complemento manual", expanded=False):
+        enable_manual_append = st.checkbox(
+            "Anexar linhas manuais aos exports finais",
+            value=False,
+            key="validation_manual_append_enabled",
+        )
+        st.caption(
+            "Essas linhas sao apenas um complemento manual para os downloads finais. "
+            "Elas nao participam do matching, nao contam como evidencia do anunciante e nao sao alteradas "
+            "por balanceamento ou ajuste de payout."
+        )
+        if enable_manual_append:
+            if "validation_manual_seed_df" not in st.session_state:
+                st.session_state["validation_manual_seed_df"] = _build_validation_manual_dataframe()
+            validation_manual_version = int(st.session_state.get("validation_manual_editor_version", 0))
+            validation_manual_editor = st.data_editor(
+                st.session_state["validation_manual_seed_df"],
+                key=f"validation_manual_editor_{validation_manual_version}",
+                num_rows="dynamic",
+                hide_index=True,
+                use_container_width=True,
+                height=360,
+                column_config={
+                    column: st.column_config.TextColumn(column)
+                    for column in _VALIDATION_MANUAL_COLUMNS
+                },
+            )
+            manual_append_df = _prepare_validation_manual_dataframe(validation_manual_editor)
+            if manual_append_df.empty:
+                st.info("Nenhuma linha manual foi preenchida para anexar aos exports.")
+            else:
+                st.success(f"{len(manual_append_df)} linha(s) manual(is) serao anexadas ao final dos exports.")
+                st.dataframe(manual_append_df.head(10), use_container_width=True, height=220, hide_index=True)
+            if st.button("Limpar linhas manuais", key="clear_validation_manual_rows_btn"):
+                st.session_state["validation_manual_seed_df"] = _build_validation_manual_dataframe()
+                st.session_state["validation_manual_editor_version"] = validation_manual_version + 1
+                st.rerun()
+        else:
+            st.info("Ative esta opcao apenas se precisar anexar linhas manuais ao final dos arquivos exportados.")
+
     # ---- Run button ----
     can_run = master_df is not None and advertiser_df is not None
     run_clicked = st.button("Executar validacao", disabled=not can_run, type="primary")
@@ -496,6 +662,7 @@ def _render_validation_tab() -> None:
                         implicit_approved=st.session_state.get("implicit_approved", False),
                         status_keywords=status_keywords,
                         priority_publisher_id=_priority_publisher_id or None,
+                        manual_append_df=manual_append_df if enable_manual_append else None,
                     )
 
                 st.session_state["run_result"] = result
@@ -523,7 +690,11 @@ def _render_validation_tab() -> None:
                     try:
                         runtime_export_module = _load_runtime_module("core.export")
                         adj_result = runtime_export_module.persist_payout_adjusted_export(
-                            result["export_internal_df"], _adj_mode, _adj_value_decimal, OUTPUTS_DIR
+                            result["export_internal_df"],
+                            _adj_mode,
+                            _adj_value_decimal,
+                            OUTPUTS_DIR,
+                            manual_append_df=result.get("manual_append_df"),
                         )
                         st.session_state["adjusted_result"] = adj_result
                     except Exception as exc:
@@ -547,6 +718,7 @@ def _render_validation_tab() -> None:
     st.subheader("Metricas da execucao")
     metrics = result["metrics"]
     comparison = result["comparison"]
+    manual_append_count = int(result.get("manual_append_count", 0))
     metric_row_1 = st.columns(5)
     metric_row_1[0].metric("Linhas do anunciante", metrics["total_advertiser_rows"])
     metric_row_1[1].metric("Linhas do MASTER", metrics["master_total_rows"])
@@ -572,6 +744,11 @@ def _render_validation_tab() -> None:
         "O export final consolidado = novamente aprovadas por match + ja aprovadas no MASTER. "
         "Linhas `paid` ficam fora do export e fora do balanceamento."
     )
+    if manual_append_count > 0:
+        st.info(
+            f"{manual_append_count} linha(s) do Complemento manual foram anexadas ao final dos exports "
+            "sem entrar no matching."
+        )
 
     # ---- Zero-match diagnostic ----
     if metrics["newly_approved_count"] == 0:
@@ -695,6 +872,7 @@ def _render_validation_tab() -> None:
                     floor=balance_floor_stored,
                     priority_publisher_id=priority_publisher_stored or None,
                     priority_pct=priority_pct_stored,
+                    manual_append_df=result.get("manual_append_df"),
                 )
                 st.session_state["balanced_result"] = balanced
                 st.session_state.pop("balanced_error", None)
@@ -732,6 +910,10 @@ def _render_validation_tab() -> None:
                     f"de {balanced_result['floor']}. O arquivo foi gerado com o total mais proximo possivel: "
                     f"{balanced_result['actual_total']}."
                 )
+            if int(balanced_result.get("manual_append_count", 0)) > 0:
+                st.caption(
+                    "As linhas do Complemento manual foram anexadas ao final do export equilibrado sem alteracao."
+                )
             _render_preview_caption(int(balanced_result.get("row_count", len(balanced_result["df"]))), 50)
             st.dataframe(balanced_result["df"].head(50), use_container_width=True)
             st.download_button(
@@ -759,6 +941,10 @@ def _render_validation_tab() -> None:
                 st.warning(
                     "O total alvo do ajuste nao pode ser atingido exatamente sem quebrar o piso minimo por linha. "
                     "O arquivo foi salvo com o total mais proximo possivel permitido."
+                )
+            if int(adjusted_result.get("manual_append_count", 0)) > 0:
+                st.caption(
+                    "As linhas do Complemento manual foram anexadas ao final do export ajustado sem alteracao."
                 )
             _render_preview_caption(len(adjusted_result["df"]), 50)
             st.dataframe(adjusted_result["df"].head(50), use_container_width=True)
@@ -793,6 +979,12 @@ def _render_validation_tab() -> None:
             st.dataframe(audit_df.head(50), use_container_width=True, height=400)
         else:
             st.info("Nenhum dado de auditoria disponivel.")
+
+    manual_append_preview_df = result.get("manual_append_df")
+    if manual_append_count > 0 and manual_append_preview_df is not None and not manual_append_preview_df.empty:
+        with st.expander("Linhas do Complemento manual anexadas ao export", expanded=False):
+            _render_preview_caption(len(manual_append_preview_df), 20)
+            st.dataframe(manual_append_preview_df.head(20), use_container_width=True, height=260, hide_index=True)
 
     # ---- Downloads ----
     st.subheader("Downloads")
@@ -993,6 +1185,9 @@ def _render_clicks_tab() -> None:
 
 def _render_id_tab() -> None:
     st.caption("Gera IDs semelhantes com base no padrao dos exemplos informados.")
+    st.caption(
+        "O gerador preserva melhor segmentos fixos, separadores, blocos repetidos e o tipo de caractere de cada posicao."
+    )
     examples_text = st.text_area(
         "Cole os IDs de exemplo (um por linha)",
         height=220,
@@ -1027,6 +1222,10 @@ def _render_id_tab() -> None:
 
     st.success(f"IDs gerados: {result['generated_count']} de {result['requested_count']}.")
     st.caption(f"Mascara detectada: `{result['mask']}` | Tamanho: `{result['length']}`")
+    st.caption(
+        f"Posicoes fixas preservadas: `{result.get('literal_positions', 0)}` | "
+        f"Posicoes variaveis detectadas: `{result.get('variable_positions', 0)}`"
+    )
 
     warning = str(result.get("warning", "")).strip()
     if warning:
@@ -1114,21 +1313,31 @@ def _render_postback_tab() -> None:
         )
         if "postback_manual_seed_df" not in st.session_state:
             st.session_state["postback_manual_seed_df"] = _build_postback_manual_dataframe()
+        postback_manual_version = int(st.session_state.get("postback_manual_editor_version", 0))
         manual_df = st.data_editor(
             st.session_state["postback_manual_seed_df"],
-            key="postback_manual_editor",
+            key=f"postback_manual_editor_{postback_manual_version}",
             num_rows="dynamic",
             hide_index=True,
             use_container_width=True,
-            height=320,
+            height=420,
             column_config={
-                "VALOR": st.column_config.TextColumn("VALOR"),
-                "CLICK": st.column_config.TextColumn("CLICK"),
-                "TRANSACTION": st.column_config.TextColumn("TRANSACTION"),
-                "POSTBACK": st.column_config.TextColumn("POSTBACK"),
+                "VALOR": st.column_config.TextColumn("VALOR", width="small"),
+                "CLICK": st.column_config.TextColumn("CLICK", width="medium"),
+                "TRANSACTION": st.column_config.TextColumn("TRANSACTION", width="medium"),
+                "POSTBACK": st.column_config.TextColumn("POSTBACK", width="large"),
             },
         )
-        st.caption("Grade editavel")
+        st.caption(
+            "Grade editavel com area ampliada para reduzir a disputa com a barra de rolagem no canto inferior direito."
+        )
+        _render_fill_down_helper(
+            dataframe=manual_df,
+            columns=_POSTBACK_MANUAL_COLUMNS,
+            seed_state_key="postback_manual_seed_df",
+            version_state_key="postback_manual_editor_version",
+            scope_label="postback",
+        )
         source_df = _prepare_manual_postback_dataframe(manual_df)
         if source_df.empty:
             st.info("Preencha ao menos uma linha na grade editavel para gerar postbacks.")

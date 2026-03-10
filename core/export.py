@@ -99,6 +99,7 @@ _SENSITIVE_VALIDATION_COLUMNS = {
 DEFAULT_BALANCE_FLOOR = Decimal("1.00")
 _MONEY = Decimal("0.01")
 _CENT = Decimal("0.01")
+_MANUAL_APPEND_SOURCE = "manual_append"
 
 
 def _timestamp_now() -> str:
@@ -132,6 +133,38 @@ def _sanitize_validation_output_dataframe(df: pd.DataFrame, schema_name: str) ->
         if column not in sanitized.columns:
             sanitized[column] = ""
     return sanitized.loc[:, schema]
+
+
+def _normalize_manual_append_dataframe(manual_append_df: pd.DataFrame | None) -> pd.DataFrame:
+    if manual_append_df is None or manual_append_df.empty:
+        return pd.DataFrame(columns=PUBLIC_EXPORT_HEADER)
+
+    normalized = manual_append_df.copy().fillna("")
+    for column in PUBLIC_EXPORT_HEADER:
+        if column not in normalized.columns:
+            normalized[column] = ""
+
+    normalized = normalized.loc[:, PUBLIC_EXPORT_HEADER].astype(str)
+    for column in ["sale_amount", "revenue", "payout"]:
+        normalized[column] = [
+            format_money(parsed) if (parsed := parse_decimal(value)) is not None else str(value).strip()
+            for value in normalized[column].tolist()
+        ]
+    normalized["status"] = [str(value).strip().lower() for value in normalized["status"].tolist()]
+    normalized["created"] = [str(value).strip() for value in normalized["created"].tolist()]
+    normalized["conversion_id"] = [str(value).strip() for value in normalized["conversion_id"].tolist()]
+    return normalized
+
+
+def _append_manual_rows_to_export(
+    export_df: pd.DataFrame,
+    manual_append_df: pd.DataFrame | None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    manual_public_df = _normalize_manual_append_dataframe(manual_append_df)
+    if manual_public_df.empty:
+        return export_df.copy(), manual_public_df
+    combined = pd.concat([export_df.copy(), manual_public_df], ignore_index=True)
+    return combined.loc[:, PUBLIC_EXPORT_HEADER], manual_public_df
 
 
 def _to_money(value: Decimal) -> Decimal:
@@ -315,11 +348,14 @@ def build_balanced_export_dataframe(
     floor: Decimal = DEFAULT_BALANCE_FLOOR,
     priority_publisher_id: str | None = None,
     priority_pct: Decimal = Decimal("0"),
+    manual_append_df: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, str, bool, str, str]:
     if export_df.empty or difference_delta == Decimal("0"):
         total = _sum_payout_column(export_df)
+        sanitized = _sanitize_validation_output_dataframe(export_df.copy(), "export_public")
+        combined_df, _ = _append_manual_rows_to_export(sanitized, manual_append_df)
         return (
-            _sanitize_validation_output_dataframe(export_df.copy(), "export_public"),
+            combined_df,
             "0.00",
             True,
             format_money(total),
@@ -352,8 +388,10 @@ def build_balanced_export_dataframe(
         balanced["revenue"] = [format_money(value) for value in new_payouts]
 
     average_delta = (actual_total - current_total) / len(new_payouts) if new_payouts else Decimal("0")
+    sanitized = _sanitize_validation_output_dataframe(balanced, "export_public")
+    combined_df, _ = _append_manual_rows_to_export(sanitized, manual_append_df)
     return (
-        _sanitize_validation_output_dataframe(balanced, "export_public"),
+        combined_df,
         format_money(average_delta),
         exact_reached,
         format_money(actual_total),
@@ -368,6 +406,7 @@ def persist_balanced_export(
     floor: Decimal = DEFAULT_BALANCE_FLOOR,
     priority_publisher_id: str | None = None,
     priority_pct: Decimal = Decimal("0"),
+    manual_append_df: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = _timestamp_now()
@@ -377,6 +416,7 @@ def persist_balanced_export(
         floor,
         priority_publisher_id=priority_publisher_id,
         priority_pct=priority_pct,
+        manual_append_df=manual_append_df,
     )
     balanced_path = output_dir / f"validated_export_balanced_{timestamp}.csv"
     _write_csv(balanced_df, balanced_path)
@@ -389,6 +429,7 @@ def persist_balanced_export(
         "target_total": target_total,
         "floor": format_money(floor),
         "row_count": int(len(balanced_df)),
+        "manual_append_count": int(len(_normalize_manual_append_dataframe(manual_append_df))),
         "priority_publisher_id": str(priority_publisher_id or "").strip(),
         "priority_pct": format_money(priority_pct),
     }
@@ -399,11 +440,14 @@ def build_payout_adjusted_dataframe(
     adjustment_mode: str,
     adjustment_value: Decimal,
     floor: Decimal = DEFAULT_BALANCE_FLOOR,
+    manual_append_df: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, str, str, bool]:
     if export_df.empty or adjustment_mode == "none":
         total = _sum_payout_column(export_df)
+        sanitized = _sanitize_validation_output_dataframe(export_df.copy(), "export_public")
+        combined_df, _ = _append_manual_rows_to_export(sanitized, manual_append_df)
         return (
-            _sanitize_validation_output_dataframe(export_df.copy(), "export_public"),
+            combined_df,
             format_money(total),
             "0.00",
             True,
@@ -438,8 +482,10 @@ def build_payout_adjusted_dataframe(
         adjusted["revenue"] = [format_money(value) for value in new_payouts]
 
     average_delta = (actual_total - current_total) / len(new_payouts) if new_payouts else Decimal("0")
+    sanitized = _sanitize_validation_output_dataframe(adjusted, "export_public")
+    combined_df, _ = _append_manual_rows_to_export(sanitized, manual_append_df)
     return (
-        _sanitize_validation_output_dataframe(adjusted, "export_public"),
+        combined_df,
         format_money(target_total),
         format_money(average_delta),
         exact_reached,
@@ -452,6 +498,7 @@ def persist_payout_adjusted_export(
     adjustment_value: Decimal,
     output_dir: Path,
     floor: Decimal = DEFAULT_BALANCE_FLOOR,
+    manual_append_df: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = _timestamp_now()
@@ -460,6 +507,7 @@ def persist_payout_adjusted_export(
         adjustment_mode,
         adjustment_value,
         floor,
+        manual_append_df=manual_append_df,
     )
     path = output_dir / f"validated_export_payout_adjusted_{timestamp}.csv"
     _write_csv(adjusted_df, path)
@@ -469,6 +517,7 @@ def persist_payout_adjusted_export(
         "target_total": target_total,
         "average_delta": average_delta,
         "exact_reached": exact_reached,
+        "manual_append_count": int(len(_normalize_manual_append_dataframe(manual_append_df))),
     }
 
 
@@ -477,6 +526,7 @@ def persist_outputs(
     match_result: dict[str, Any],
     logger: RunLogger,
     output_dir: Path,
+    manual_append_df: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = _timestamp_now()
@@ -486,7 +536,8 @@ def persist_outputs(
         match_result["export_positions"],
         match_result["final_status"],
     )
-    export_df = _sanitize_validation_output_dataframe(export_internal_df, "export_public")
+    export_base_df = _sanitize_validation_output_dataframe(export_internal_df, "export_public")
+    export_df, manual_public_df = _append_manual_rows_to_export(export_base_df, manual_append_df)
     diff_df = _sanitize_validation_output_dataframe(match_result["diff_df"], "diff_public")
     needs_review_df = _sanitize_validation_output_dataframe(match_result["needs_review_df"], "needs_review_public")
     audit_df = _sanitize_validation_output_dataframe(
@@ -524,6 +575,8 @@ def persist_outputs(
             "difference_advertiser_minus_master": format_money(difference),
             "master_revenue_total_file_scope": format_money(master_total_file_scope),
             "advertiser_total_detected_file_scope": format_money(advertiser_total_file_scope),
+            "manual_append_rows": int(len(manual_public_df)),
+            "manual_append_source": _MANUAL_APPEND_SOURCE if not manual_public_df.empty else "",
         },
     )
 
@@ -540,6 +593,7 @@ def persist_outputs(
         "newly_approved_rows": int(len(match_result.get("newly_approved_positions", []))),
         "carry_forward_rows": int(len(match_result.get("carry_forward_positions", []))),
         "paid_excluded_rows": int(len(match_result.get("paid_excluded_positions", []))),
+        "manual_append_rows": int(len(manual_public_df)),
     }
 
     log_paths = logger.save(
@@ -558,10 +612,14 @@ def persist_outputs(
     return {
         "timestamp": timestamp,
         "export_internal_df": export_internal_df,
+        "export_base_df": export_base_df,
         "export_df": export_df,
         "diff_df": diff_df,
         "needs_review_df": needs_review_df,
         "audit_df": audit_df,
+        "manual_append_df": manual_public_df,
+        "manual_append_count": int(len(manual_public_df)),
+        "manual_append_source": _MANUAL_APPEND_SOURCE if not manual_public_df.empty else "",
         "metrics": match_result["metrics"],
         "comparison": comparison,
         "paths": {
